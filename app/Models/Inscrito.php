@@ -1,0 +1,20 @@
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+
+class Inscrito extends Model
+{
+    use HasFactory;
+
+    protected $fillable = [
+        'documento',
+        'nombres',
+        'apellidos',
+        'unidad',
+        'area',
+        'nivel',
+    ];
+}

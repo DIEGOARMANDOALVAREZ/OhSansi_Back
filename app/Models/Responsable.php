@@ -1,13 +1,13 @@
 <?php
-
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Laravel\Sanctum\HasApiTokens;
 
 class Responsable extends Model
 {
-    use HasFactory;
+    use HasFactory, HasApiTokens; // <-- Agregar HasApiTokens
 
     protected $table = 'responsables';
 
@@ -20,7 +20,7 @@ class Responsable extends Model
         'activo' => 'boolean',
     ];
 
-    // Relaciones opcionales (si tienes esas tablas/modelos)
+    // Relaciones
     public function area()  { return $this->belongsTo(Area::class); }
     public function nivel() { return $this->belongsTo(Nivel::class); }
 }

@@ -30,13 +30,41 @@ class Kernel extends HttpKernel
         ],
 
         'api' => [
+            \Laravel\Sanctum\Http\Middleware\EnsureFrontendRequestsAreStateful::class,
             \Illuminate\Routing\Middleware\ThrottleRequests::class . ':api',
             \Illuminate\Routing\Middleware\SubstituteBindings::class,
         ],
     ];
 
     /**
-     * Aliases de middleware para usar en rutas.
+     * (Compat) Aliases de middleware para versiones que siguen leyendo routeMiddleware.
+     */
+    protected $routeMiddleware = [
+        // 🔒 Auth
+        'auth' => \App\Http\Middleware\Authenticate::class,
+        'auth.basic' => \Illuminate\Auth\Middleware\AuthenticateWithBasicAuth::class,
+
+        // 🔐 Autorización
+        'can' => \Illuminate\Auth\Middleware\Authorize::class,
+        'guest' => \App\Http\Middleware\RedirectIfAuthenticated::class,
+        'password.confirm' => \Illuminate\Auth\Middleware\RequirePassword::class,
+        'signed' => \Illuminate\Routing\Middleware\ValidateSignature::class,
+        'verified' => \Illuminate\Auth\Middleware\EnsureEmailIsVerified::class,
+
+        // ⚙️ Otros
+        'cache.headers' => \Illuminate\Http\Middleware\SetCacheHeaders::class,
+        'throttle' => \Illuminate\Routing\Middleware\ThrottleRequests::class,
+
+        // 🧩 Roles (custom)
+        'role' => \App\Http\Middleware\CheckRole::class,
+
+        // 🧑‍💼 Tokens planos
+        'auth.responsable' => \App\Http\Middleware\AuthResponsable::class,
+        'auth.evaluador'   => \App\Http\Middleware\AuthEvaluador::class,
+    ];
+
+    /**
+     * Aliases de middleware (Laravel 10+).
      */
     protected $middlewareAliases = [
         // 🔒 Auth
@@ -56,5 +84,9 @@ class Kernel extends HttpKernel
 
         // 🧩 Roles (custom)
         'role' => \App\Http\Middleware\CheckRole::class,
+
+        // 🧑‍💼 Tokens planos
+        'auth.responsable' => \App\Http\Middleware\AuthResponsable::class,
+        'auth.evaluador'   => \App\Http\Middleware\AuthEvaluador::class,
     ];
 }
