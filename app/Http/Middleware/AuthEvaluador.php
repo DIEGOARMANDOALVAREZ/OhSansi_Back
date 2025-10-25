@@ -24,9 +24,9 @@ class AuthEvaluador
             return response()->json(['message' => 'Token inválido.'], 401);
         }
 
-        if ($row->evaluador->activo === false) {
-            return response()->json(['message' => 'Evaluador inactivo.'], 401);
-        }
+        // if ($row->evaluador->activo === false) {
+        //     return response()->json(['message' => 'Evaluador inactivo.'], 401);
+        // }
 
         // Inyecta el evaluador para el controlador
         $request->merge(['evaluador' => $row->evaluador]);

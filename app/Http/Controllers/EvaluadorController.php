@@ -21,13 +21,13 @@ use Throwable;
 class EvaluadorController extends Controller
 {
     // ==========================================================
-    // 📋 LISTAR (filtros + búsqueda + paginación)
+    // 📋 LISTAR (búsqueda + filtros de asociaciones + paginación)
     // ==========================================================
     public function index(Request $request)
     {
         try {
             $query = Evaluador::query()
-                ->with(['asociaciones']); // ->with(['asociaciones.area','asociaciones.nivel']) si hicieras eager de los modelos
+                ->with(['asociaciones']);
 
             // Búsqueda (PostgreSQL -> ILIKE). Para MySQL usa like.
             if ($request->filled('search')) {
@@ -40,7 +40,7 @@ class EvaluadorController extends Controller
                 });
             }
 
-            // Filtros dentro de asociaciones (area_id / nivel_id)
+            // Filtros por relación (area_id / nivel_id)
             if ($request->filled('area_id')) {
                 $query->whereHas('asociaciones', function ($q) use ($request) {
                     $q->where('area_id', (int) $request->area_id);
@@ -52,14 +52,6 @@ class EvaluadorController extends Controller
                 });
             }
 
-            // Estado
-            if ($request->filled('estado')) {
-                $estado = $this->parseEstado($request->estado);
-                if (!is_null($estado)) {
-                    $query->where('activo', $estado);
-                }
-            }
-
             $perPage = (int) $request->get('per_page', 10);
             $perPage = max(1, min($perPage, 100));
 
@@ -68,7 +60,7 @@ class EvaluadorController extends Controller
                 ->orderBy('nombres')
                 ->paginate($perPage);
 
-            // 🔧 Transformar cada item al formato que el front espera (asociaciones planas)
+            // “Aplanar” asociaciones para el front
             $paginator->getCollection()->transform(function ($e) {
                 return $this->shapeEvaluador($e);
             });
@@ -90,10 +82,7 @@ class EvaluadorController extends Controller
     {
         try {
             $evaluador->load('asociaciones');
-
-            // 🔧 Devolver shape plano para el form del front
             $shaped = $this->shapeEvaluador($evaluador);
-
             return response()->json($shaped, 200);
         } catch (Throwable $e) {
             Log::error('EVALUADOR show error', [
@@ -105,18 +94,14 @@ class EvaluadorController extends Controller
     }
 
     // ----------------------------------------------------------
-    // 🟢 CREAR (Múltiples áreas con un nivel_id — o asociaciones directas)
+    // 🟢 CREAR
     public function store(StoreEvaluadorRequest $req)
     {
         $validated = $req->validated();
 
-        // Separamos campos del modelo principal y de relaciones
         $baseData = collect($validated)->except(['area_id', 'nivel_id', 'asociaciones'])->toArray();
         $baseData = $this->normalizeEvaluadorData($baseData);
 
-        // Construir asociaciones desde:
-        // - area_id[] + nivel_id, o
-        // - asociaciones: [{area_id, nivel_id}, ...]
         $asociacionesSync = $this->buildAsociacionesSyncArray(
             $validated['asociaciones'] ?? null,
             $validated['area_id'] ?? [],
@@ -132,16 +117,13 @@ class EvaluadorController extends Controller
                 return $e->load('asociaciones');
             });
 
-            // Auditoría
             try {
                 Audit::log(Auth::id(), 'Evaluador', $evaluador->id, 'CREAR', $evaluador->toArray());
             } catch (Throwable $e) {
                 Log::warning('AUDIT store falló', ['id' => $evaluador->id, 'error' => $e->getMessage()]);
             }
 
-            // 🔧 Devolver shape plano
             $shaped = $this->shapeEvaluador($evaluador);
-
             return response()->json(['message' => 'Evaluador creado', 'data' => $shaped], Response::HTTP_CREATED);
 
         } catch (Throwable $e) {
@@ -174,7 +156,6 @@ class EvaluadorController extends Controller
             DB::transaction(function () use ($evaluador, $baseData, $asociacionesSync) {
                 $evaluador->update($baseData);
 
-                // Solo sincroniza si el front envió algo sobre asociaciones/áreas
                 if (!is_null($asociacionesSync)) {
                     $evaluador->asociaciones()->sync($asociacionesSync);
                 }
@@ -191,9 +172,7 @@ class EvaluadorController extends Controller
                 Log::warning('AUDIT update falló', ['id' => $evaluador->id, 'error' => $e->getMessage()]);
             }
 
-            // 🔧 Devolver shape plano
             $shaped = $this->shapeEvaluador($fresh);
-
             return response()->json(['message' => 'Evaluador actualizado', 'data' => $shaped], 200);
 
         } catch (Throwable $e) {
@@ -207,7 +186,7 @@ class EvaluadorController extends Controller
     }
 
     // ----------------------------------------------------------
-    // 🗑️ INACTIVAR / ELIMINAR
+    // 🗑️ ELIMINAR (sin “inactivar”)
     public function destroy(Request $request, Evaluador $evaluador)
     {
         $before = $evaluador->toArray();
@@ -219,31 +198,21 @@ class EvaluadorController extends Controller
                 } else {
                     $evaluador->delete();
                 }
-
-                try {
-                    Audit::log(Auth::id(), 'Evaluador', $before['id'] ?? null, 'ELIMINAR', ['before' => $before, 'after' => null]);
-                } catch (Throwable $e) {
-                    Log::warning('AUDIT destroy hard falló', ['id' => $before['id'] ?? null, 'error' => $e->getMessage()]);
-                }
-
-                return response()->json(['message' => 'Evaluador eliminado definitivamente'], 200);
+            } else {
+                // Como tu modelo no usa SoftDeletes, esto será delete real igual.
+                $evaluador->delete();
             }
-
-            // Inactivar (borrado lógico)
-            DB::transaction(function () use ($evaluador) {
-                $evaluador->update(['activo' => false]);
-            });
 
             try {
-                Audit::log(Auth::id(), 'Evaluador', $evaluador->id, 'EDITAR', [
+                Audit::log(Auth::id(), 'Evaluador', $before['id'] ?? null, 'ELIMINAR', [
                     'before' => $before,
-                    'after'  => $evaluador->toArray()
+                    'after'  => null
                 ]);
             } catch (Throwable $e) {
-                Log::warning('AUDIT destroy falló', ['id' => $evaluador->id, 'error' => $e->getMessage()]);
+                Log::warning('AUDIT destroy falló', ['id' => $before['id'] ?? null, 'error' => $e->getMessage()]);
             }
 
-            return response()->json(['message' => 'Evaluador inactivado'], 200);
+            return response()->json(['message' => 'Evaluador eliminado'], 200);
 
         } catch (Throwable $e) {
             Log::error('EVALUADOR destroy error', [
@@ -256,7 +225,7 @@ class EvaluadorController extends Controller
     }
 
     // ==========================================================
-    // 🔐 TOKENS (Login por correo + token emitido por Admin)
+    // 🔐 TOKENS (Admin)
     // ==========================================================
     public function emitirToken(Request $request, Evaluador $evaluador)
     {
@@ -313,9 +282,7 @@ class EvaluadorController extends Controller
                 Log::warning('AUDIT revocarTokens falló', ['id' => $evaluador->id, 'error' => $e->getMessage()]);
             }
 
-            return response()->json([
-                'message' => 'Todos los tokens del evaluador fueron revocados.',
-            ], 200);
+            return response()->json(['message' => 'Todos los tokens del evaluador fueron revocados.'], 200);
 
         } catch (Throwable $e) {
             Log::error('EVALUADOR revocarTokens error', [
@@ -327,28 +294,15 @@ class EvaluadorController extends Controller
     }
 
     // ----------------------------------------------------------
-    // 🔧 Helpers
+    // Helpers
     // ----------------------------------------------------------
-    private function parseEstado($raw): ?bool
-    {
-        $raw = is_string($raw) ? strtolower(trim($raw)) : $raw;
-        return match ($raw) {
-            '1', 1, 'true', true, 'activo'     => true,
-            '0', 0, 'false', false, 'inactivo' => false,
-            default                            => null,
-        };
-    }
-
     private function normalizeEvaluadorData(array $data): array
     {
-        if (isset($data['activo'])) {
-            $data['activo'] = (bool) $data['activo'];
-        }
         if (isset($data['correo'])) {
             $data['correo'] = strtolower(trim($data['correo']));
         }
-        if (isset($data['ci']) && $data['ci'] !== null) {
-            $data['ci'] = trim((string)$data['ci']);
+        if (array_key_exists('ci', $data) && $data['ci'] !== null) {
+            $data['ci'] = trim((string) $data['ci']);
         }
         return $data;
     }
@@ -375,7 +329,7 @@ class EvaluadorController extends Controller
             return $sync;
         }
 
-        // Caso 3: no se envió nada (p. ej., update sin tocar relaciones)
+        // No se envió nada
         return null;
     }
 
@@ -387,16 +341,11 @@ class EvaluadorController extends Controller
         return (int) $raw;
     }
 
-    /**
-     * Convierte el modelo Evaluador a array y “aplana” la relación asociaciones
-     * al formato que el front espera: [{ area_id, nivel_id }, ...]
-     */
     private function shapeEvaluador(?Evaluador $e): array
     {
         if (!$e) return [];
         $arr = $e->toArray();
 
-        // Si la relación está cargada, mapear a shape plano
         if ($e->relationLoaded('asociaciones')) {
             $arr['asociaciones'] = $e->asociaciones
                 ->map(function ($area) {
@@ -408,7 +357,6 @@ class EvaluadorController extends Controller
                 ->values()
                 ->all();
         } else {
-            // Si no está cargada, devolver arreglo vacío (el front igual maneja esto)
             $arr['asociaciones'] = [];
         }
 

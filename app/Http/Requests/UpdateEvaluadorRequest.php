@@ -33,9 +33,6 @@ class UpdateEvaluadorRequest extends FormRequest
                 ? null
                 : (int)$this->input('nivel_id');
         }
-        if ($this->has('activo')) {
-            $merge['activo'] = filter_var($this->input('activo'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? false;
-        }
 
         $this->merge($merge);
     }
@@ -60,8 +57,8 @@ class UpdateEvaluadorRequest extends FormRequest
             'area_id'   => ['sometimes','required','array','min:1'],
             'area_id.*' => ['required','integer','exists:areas,id'],
 
+            // Nivel único (opcional)
             'nivel_id'  => ['nullable','integer','exists:niveles,id'],
-            'activo'    => ['sometimes','required','boolean'],
         ];
     }
 
@@ -88,7 +85,6 @@ class UpdateEvaluadorRequest extends FormRequest
             'area_id.*.exists'   => 'Una o más áreas seleccionadas no existen.',
 
             'nivel_id.exists'    => 'El nivel indicado no existe.',
-            'activo.boolean'     => 'El campo estado es inválido.',
         ];
     }
 }

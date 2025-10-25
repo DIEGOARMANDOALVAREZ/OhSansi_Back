@@ -8,6 +8,8 @@ use App\Http\Controllers\ResponsableController;
 use App\Http\Controllers\EvaluadorController;
 use App\Http\Controllers\EvaluacionController;
 use App\Http\Controllers\InscritoController;
+use App\Http\Controllers\ClasificacionController;
+use App\Http\Controllers\LogNotasController; // ✅ CORREGIDO (fuera de la carpeta Responsable)
 
 use App\Http\Middleware\AuthResponsable;
 use App\Http\Middleware\AuthEvaluador;
@@ -34,8 +36,6 @@ Route::get('/ping', fn () => response()->json([
 
 // =======================================================
 // 🔐 AUTENTICACIÓN PRINCIPAL
-// - Admin/Evaluador/Comunicaciones con Sanctum
-// - Responsable/Evaluador con token propio (middlewares abajo)
 // =======================================================
 Route::post('/auth/login', [AuthController::class, 'login'])->name('auth.login');
 
@@ -95,6 +95,7 @@ Route::middleware('auth:sanctum')->group(function () {
 // 🧑‍💼 RUTAS PARA RESPONSABLES (token plano ResponsableToken)
 // =======================================================
 Route::middleware(AuthResponsable::class)->group(function () {
+
     // Perfil del responsable
     Route::get('/responsable/perfil', [AuthController::class, 'perfilResponsable'])->name('responsable.perfil');
 
@@ -112,6 +113,31 @@ Route::middleware(AuthResponsable::class)->group(function () {
     // Reabrir evaluaciones
     Route::post('/evaluaciones/{inscrito}/reabrir', [EvaluacionController::class, 'reabrir'])
         ->name('responsable.reabrirEvaluacion');
+
+    // ===================================================
+    // 🎯 HU-6: GENERAR LISTA DE CLASIFICADOS
+    // ===================================================
+    Route::get('/responsable/clasificacion/preview', [ClasificacionController::class, 'preview'])
+        ->name('responsable.clasificacion.preview');
+
+    Route::post('/responsable/clasificacion/confirm', [ClasificacionController::class, 'confirm'])
+        ->name('responsable.clasificacion.confirm');
+
+    Route::get('/responsable/clasificacion/export', [ClasificacionController::class, 'exportCsv'])
+        ->name('responsable.clasificacion.export');
+        
+    Route::get('/responsable/clasificacion/list', [ClasificacionController::class, 'list'])
+        ->name('responsable.clasificacion.list');
+
+    // ===================================================
+    // 🧾 HU-8: LOG DE CAMBIOS DE NOTAS (auditoría)
+    // ===================================================
+    Route::get('/responsable/log-notas', [LogNotasController::class, 'index'])
+        ->name('responsable.logNotas.index');
+    Route::get('/responsable/log-notas/export', [LogNotasController::class, 'exportCsv'])
+        ->name('responsable.logNotas.exportCsv');
+    Route::get('/responsable/log-notas/export-xlsx', [LogNotasController::class, 'exportXlsx'])
+        ->name('responsable.logNotas.exportXlsx');
 });
 
 // =======================================================

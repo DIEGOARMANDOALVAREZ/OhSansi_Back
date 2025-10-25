@@ -14,7 +14,21 @@ class Inscrito extends Model
         'nombres',
         'apellidos',
         'unidad',
+        // textos originales
         'area',
         'nivel',
+        // nuevos FK
+        'area_id',
+        'nivel_id',
     ];
+
+    public function areaRef()
+    {
+        return $this->belongsTo(Area::class, 'area_id');
+    }
+
+    public function nivelRef()
+    {
+        return $this->belongsTo(Nivel::class, 'nivel_id');
+    }
 }

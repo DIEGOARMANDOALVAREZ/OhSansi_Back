@@ -15,18 +15,15 @@ class AuthController extends Controller
 {
     /**
      * POST /auth/login
-     * Autentica:
-     *  - Usuarios del sistema (ADMIN/otros) vía Sanctum (correo + password)
-     *  - Responsables (correo + CI) vía token plano (responsable_tokens)
-     *  - Evaluadores:
-     *      a) correo + CI  -> token plano (evaluador_tokens)  ✅ NUEVO
-     *      b) correo + TOKEN emitido por Admin -> token plano (evaluador_tokens)
+     * - Usuarios del sistema (Sanctum)
+     * - Responsable (correo + CI) -> token plano
+     * - Evaluador (correo + CI o correo + TOKEN emitido) -> token plano
      */
     public function login(Request $request)
     {
         $data = $request->validate([
             'correo'   => ['required', 'email'],
-            'password' => ['required', 'string'], // usuarios: password | responsables: CI | evaluadores: CI o TOKEN
+            'password' => ['required', 'string'], // usuarios: password | responsable: CI | evaluador: CI o TOKEN
             'device'   => ['sometimes', 'string'],
         ]);
 
@@ -34,7 +31,7 @@ class AuthController extends Controller
         $secret = trim($data['password']);
         $device = $data['device'] ?? 'web';
 
-        /** 1️⃣ Usuarios (Sanctum) */
+        /** 1) Usuarios (Sanctum) */
         $user = Usuario::where('correo', $correo)->first();
         if ($user && Hash::check($secret, $user->password)) {
             $token = $user->createToken($device)->plainTextToken;
@@ -46,9 +43,9 @@ class AuthController extends Controller
             ]);
         }
 
-        /** 2️⃣ Responsables (correo + CI -> token plano) */
+        /** 2) Responsable (correo + CI) -> token plano */
         $responsable = Responsable::where('correo', $correo)->first();
-        if ($responsable && (string)$responsable->ci === $secret) {
+        if ($responsable && (string) $responsable->ci === $secret) {
             $plainToken = Str::random(64);
 
             ResponsableToken::create([
@@ -75,13 +72,11 @@ class AuthController extends Controller
             ]);
         }
 
-        /** 3️⃣ Evaluadores
-         *  Preferimos CI si coincide, si no, verificamos TOKEN emitido
-         */
+        /** 3) Evaluador (preferir CI, si no token emitido) */
         $evaluador = Evaluador::where('correo', $correo)->first();
         if ($evaluador) {
             // 3a) correo + CI
-            if ($evaluador->ci && (string)$evaluador->ci === $secret) {
+            if ($evaluador->ci && (string) $evaluador->ci === $secret) {
                 $plainToken = Str::random(64);
 
                 EvaluadorToken::create([
@@ -115,7 +110,7 @@ class AuthController extends Controller
                         ->first();
 
             if ($tokenRow) {
-                // Rotamos: nuevo token por login
+                // rotar token
                 $plainToken = Str::random(64);
                 EvaluadorToken::create([
                     'evaluador_id' => $evaluador->id,
@@ -184,7 +179,7 @@ class AuthController extends Controller
         ]);
     }
 
-    /** POST /auth/logout (borra token Sanctum o tokens planos) */
+    /** POST /auth/logout */
     public function logout(Request $request)
     {
         if ($request->user()) {

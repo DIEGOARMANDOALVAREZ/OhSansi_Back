@@ -6,6 +6,8 @@ use App\Http\Requests\GuardarEvaluacionRequest;
 use App\Http\Requests\FinalizarEvaluacionRequest;
 use App\Models\Evaluacion;
 use App\Models\Inscrito;
+use App\Models\Area;
+use App\Models\Nivel;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -15,14 +17,13 @@ class EvaluacionController extends Controller
 {
     /**
      * GET /evaluaciones/asignadas
-     * Lista de inscritos que el evaluador PUEDE evaluar (según sus asociaciones).
-     * Incluye si ya tiene evaluación y su estado.
+     * Lista de inscritos que el evaluador puede evaluar según sus asociaciones (área/nivel).
+     * NOTA: En tu modelo Inscrito, área/nivel son STRINGS (no FKs).
      */
     public function asignadas(Request $request)
     {
         /** @var \App\Models\Evaluador|null $evaluador */
-        $evaluador = $request->input('evaluador'); // desde middleware auth.evaluador
-
+        $evaluador = $request->input('evaluador'); // inyectado por middleware auth.evaluador
         if (!$evaluador) {
             return response()->json(['message' => 'No autenticado.'], 401);
         }
@@ -31,55 +32,99 @@ class EvaluacionController extends Controller
             $perPage = max(1, min((int)$request->get('per_page', 10), 100));
             $search  = trim((string)$request->get('search', ''));
 
-            // Traemos las asociaciones del evaluador
-            $asocs = $evaluador->asociaciones()->get(['area_id','nivel_id']);
+            // Asociaciones: áreas del evaluador + nivel_id opcional (desde pivot evaluador_area)
+            $asocs = $evaluador->asociaciones()
+                ->select('areas.id as area_id', 'areas.nombre as area_nombre', 'evaluador_area.nivel_id')
+                ->get();
 
-            // Armamos un query de inscritos filtrados por la/s asociaciones
-            $inscritos = Inscrito::query()
-                ->when($search !== '', function($q) use ($search) {
-                    $q->where(function($qq) use ($search) {
-                        $qq->where('nombres','ilike',"%{$search}%")
-                           ->orWhere('apellidos','ilike',"%{$search}%")
-                           ->orWhere('documento','ilike',"%{$search}%");
-                    });
-                })
-                ->where(function($q) use ($asocs) {
-                    foreach ($asocs as $a) {
-                        // Coincidencia por área y (si nivel_id no es null) también por nivel
-                        $q->orWhere(function($qq) use ($a) {
-                            $qq->where('area_id', $a->area_id);
-                            if (!is_null($a->nivel_id)) {
-                                $qq->where('nivel_id', $a->nivel_id);
+            // Si no tiene asociaciones → paginado vacío
+            if ($asocs->isEmpty()) {
+                $empty = Inscrito::query()
+                    ->whereRaw(DB::getDriverName() === 'pgsql' ? 'true = false' : '1 = 0')
+                    ->paginate($perPage);
+                return response()->json($empty, 200);
+            }
+
+            // Mapa nivel_id => nombre para cotejar contra el string de Inscrito.nivel
+            $nivelIds = $asocs->pluck('nivel_id')->filter()->unique()->values();
+            $nivelesById = $nivelIds->isNotEmpty()
+                ? Nivel::whereIn('id', $nivelIds)->pluck('nombre', 'id')
+                : collect();
+
+            // Base query de inscritos (filtros por texto en nombres/apellidos/documento)
+            $q = Inscrito::query();
+            if ($search !== '') {
+                $s = mb_strtolower($search);
+                $q->where(function ($qq) use ($s) {
+                    $qq->whereRaw('LOWER(nombres)   LIKE ?', ["%{$s}%"])
+                       ->orWhereRaw('LOWER(apellidos) LIKE ?', ["%{$s}%"])
+                       ->orWhereRaw('LOWER(documento) LIKE ?', ["%{$s}%"]);
+                });
+            }
+
+            // Filtro por asociaciones (comparación por NOMBRE de área/nivel, case-insensitive)
+            $q->where(function ($qq) use ($asocs, $nivelesById) {
+                foreach ($asocs as $a) {
+                    $areaNombre = (string) $a->area_nombre;
+                    $nivelId    = $a->nivel_id;
+
+                    $qq->orWhere(function ($or) use ($areaNombre, $nivelId, $nivelesById) {
+                        $or->whereRaw('LOWER(area) = ?', [mb_strtolower($areaNombre)]);
+
+                        if (!is_null($nivelId)) {
+                            $nivelNombre = (string) ($nivelesById[$nivelId] ?? '');
+                            if ($nivelNombre !== '') {
+                                $or->whereRaw('LOWER(nivel) = ?', [mb_strtolower($nivelNombre)]);
+                            } else {
+                                // Si no se puede resolver el nombre del nivel, forzamos falso
+                                $or->whereRaw(DB::getDriverName() === 'pgsql' ? 'true = false' : '1 = 0');
                             }
-                        });
-                    }
-                })
-                ->with(['area','nivel']) // si tienes relaciones
+                        }
+                    });
+                }
+            });
+
+            $paginator = $q
                 ->orderBy('apellidos')
                 ->orderBy('nombres')
                 ->paginate($perPage);
 
-            // Adjuntamos estado de evaluación de este evaluador para cada inscrito
-            $inscritos->getCollection()->transform(function($inscrito) use ($evaluador) {
-                $eval = Evaluacion::where('inscrito_id', $inscrito->id)
+            // Transformamos cada inscrito para adjuntar evaluación y objetos area/nivel {id?, nombre}
+            $paginator->getCollection()->transform(function ($i) use ($evaluador) {
+                $eval = Evaluacion::where('inscrito_id', $i->id)
                     ->where('evaluador_id', $evaluador->id)
                     ->first();
 
-                $inscrito->evaluacion = $eval ? [
-                    'id'          => $eval->id,
-                    'estado'      => $eval->estado,
-                    'nota_final'  => $eval->nota_final,
-                    'concepto'    => $eval->concepto,
-                    'finalizado_at' => $eval->finalizado_at,
-                ] : null;
+                $areaId  = $this->resolverAreaIdPorNombre($i->area);
+                $nivelId = $this->resolverNivelIdPorNombre($i->nivel);
 
-                return $inscrito;
+                return [
+                    'id'        => $i->id,
+                    'nombres'   => $i->nombres,
+                    'apellidos' => $i->apellidos,
+                    'documento' => $i->documento,
+
+                    // Enviamos objetos area/nivel con nombre (y id si existe en catálogo)
+                    'area'      => $i->area ? ['id' => $areaId,  'nombre' => $i->area] : null,
+                    'nivel'     => $i->nivel ? ['id' => $nivelId, 'nombre' => $i->nivel] : null,
+
+                    'evaluacion' => $eval ? [
+                        'id'            => $eval->id,
+                        'estado'        => $eval->estado,
+                        'nota_final'    => $eval->nota_final,
+                        'concepto'      => $eval->concepto,
+                        'finalizado_at' => $eval->finalizado_at,
+                    ] : null,
+                ];
             });
 
-            return response()->json($inscritos, 200);
-
+            return response()->json($paginator, 200);
         } catch (Throwable $e) {
-            Log::error('EVALUACIONES asignadas error', ['msg' => $e->getMessage()]);
+            Log::error('EVALUACIONES asignadas error', [
+                'msg'  => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
             return response()->json(['message' => 'Error al listar asignaciones.'], 500);
         }
     }
@@ -87,17 +132,16 @@ class EvaluacionController extends Controller
     /**
      * POST /evaluaciones/{inscrito}/guardar
      * Crea/actualiza evaluación en estado "borrador".
+     * Resolvemos area_id/nivel_id por nombre (si existen en catálogos).
      */
     public function guardar(GuardarEvaluacionRequest $request, Inscrito $inscrito)
     {
         /** @var \App\Models\Evaluador|null $evaluador */
         $evaluador = $request->input('evaluador');
-
         if (!$evaluador) {
             return response()->json(['message' => 'No autenticado.'], 401);
         }
 
-        // Autorización: ¿El evaluador está asignado al área/nivel del inscrito?
         if (!$this->evaluadorPuedeEvaluar($evaluador, $inscrito)) {
             return response()->json(['message' => 'No autorizado para evaluar este inscrito.'], 403);
         }
@@ -106,33 +150,35 @@ class EvaluacionController extends Controller
 
         try {
             $evaluacion = DB::transaction(function () use ($evaluador, $inscrito, $data) {
+                $areaId  = $this->resolverAreaIdPorNombre($inscrito->area);
+                $nivelId = $this->resolverNivelIdPorNombre($inscrito->nivel);
+
                 $eval = Evaluacion::firstOrNew([
                     'inscrito_id'  => $inscrito->id,
                     'evaluador_id' => $evaluador->id,
                 ]);
 
-                $eval->area_id  = $inscrito->area_id;
-                $eval->nivel_id = $inscrito->nivel_id;
-
-                // Notas parciales
-                if (array_key_exists('notas', $data))       $eval->notas      = $data['notas'];
-                if (array_key_exists('nota_final', $data))  $eval->nota_final = $data['nota_final'];
-                if (array_key_exists('concepto', $data))    $eval->concepto   = $data['concepto'];
+                $eval->area_id       = $areaId;
+                $eval->nivel_id      = $nivelId;
+                if (array_key_exists('notas', $data))         $eval->notas         = $data['notas'];
+                if (array_key_exists('nota_final', $data))    $eval->nota_final    = $data['nota_final'];
+                if (array_key_exists('concepto', $data))      $eval->concepto      = $data['concepto'];
                 if (array_key_exists('observaciones', $data)) $eval->observaciones = $data['observaciones'];
 
-                // Siempre en borrador al "guardar"
                 $eval->estado = 'borrador';
                 $eval->finalizado_at = null;
-
                 $eval->save();
 
                 return $eval->fresh();
             });
 
             return response()->json(['message' => 'Guardado en borrador', 'data' => $evaluacion], 200);
-
         } catch (Throwable $e) {
-            Log::error('EVALUACION guardar error', ['msg' => $e->getMessage()]);
+            Log::error('EVALUACION guardar error', [
+                'msg'  => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
             return response()->json(['message' => 'No se pudo guardar la evaluación.'], 500);
         }
     }
@@ -145,7 +191,6 @@ class EvaluacionController extends Controller
     {
         /** @var \App\Models\Evaluador|null $evaluador */
         $evaluador = $request->input('evaluador');
-
         if (!$evaluador) {
             return response()->json(['message' => 'No autenticado.'], 401);
         }
@@ -158,30 +203,35 @@ class EvaluacionController extends Controller
 
         try {
             $evaluacion = DB::transaction(function () use ($evaluador, $inscrito, $data) {
+                $areaId  = $this->resolverAreaIdPorNombre($inscrito->area);
+                $nivelId = $this->resolverNivelIdPorNombre($inscrito->nivel);
+
                 $eval = Evaluacion::firstOrNew([
                     'inscrito_id'  => $inscrito->id,
                     'evaluador_id' => $evaluador->id,
                 ]);
 
-                $eval->area_id      = $inscrito->area_id;
-                $eval->nivel_id     = $inscrito->nivel_id;
-                $eval->notas        = $data['notas'];
-                $eval->nota_final   = $data['nota_final'];
-                $eval->concepto     = $data['concepto'];
-                $eval->observaciones= $data['observaciones'] ?? null;
+                $eval->area_id       = $areaId;
+                $eval->nivel_id      = $nivelId;
+                $eval->notas         = $data['notas'];
+                $eval->nota_final    = $data['nota_final'];
+                $eval->concepto      = $data['concepto'];
+                $eval->observaciones = $data['observaciones'] ?? null;
 
                 $eval->estado = 'finalizado';
                 $eval->finalizado_at = now();
-
                 $eval->save();
 
                 return $eval->fresh();
             });
 
             return response()->json(['message' => 'Evaluación finalizada', 'data' => $evaluacion], 200);
-
         } catch (Throwable $e) {
-            Log::error('EVALUACION finalizar error', ['msg' => $e->getMessage()]);
+            Log::error('EVALUACION finalizar error', [
+                'msg'  => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
             return response()->json(['message' => 'No se pudo finalizar la evaluación.'], 500);
         }
     }
@@ -193,7 +243,7 @@ class EvaluacionController extends Controller
     public function reabrir(Request $request, Inscrito $inscrito)
     {
         /** @var \App\Models\Responsable|null $responsable */
-        $responsable = $request->input('responsable'); // desde middleware auth.responsable
+        $responsable = $request->input('responsable'); // middleware auth.responsable
         if (!$responsable) {
             return response()->json(['message' => 'No autenticado.'], 401);
         }
@@ -209,31 +259,65 @@ class EvaluacionController extends Controller
             $eval->save();
 
             return response()->json(['message' => 'Evaluación reabierta', 'data' => $eval], 200);
-
         } catch (Throwable $e) {
-            Log::error('EVALUACION reabrir error', ['msg' => $e->getMessage()]);
+            Log::error('EVALUACION reabrir error', [
+                'msg'  => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+            ]);
             return response()->json(['message' => 'No se pudo reabrir la evaluación.'], 500);
         }
     }
 
     /* ======================
-       Helpers de autorización
+       Helpers
        ====================== */
 
-    private function evaluadorPuedeEvaluar($evaluador, $inscrito): bool
+    /**
+     * Autoriza si el evaluador puede evaluar al inscrito:
+     * - Coincide por NOMBRE de área (Inscrito.area) con algún área asignada al evaluador.
+     * - Si la asignación tiene nivel específico, validamos NOMBRE de nivel (Inscrito.nivel).
+     */
+    private function evaluadorPuedeEvaluar($evaluador, Inscrito $inscrito): bool
     {
-        // Si no hay asociaciones, no puede evaluar
-        $asocs = $evaluador->asociaciones()->get(['area_id','nivel_id']);
+        $asocs = $evaluador->asociaciones()
+            ->select('areas.id as area_id', 'areas.nombre as area_nombre', 'evaluador_area.nivel_id')
+            ->get();
+
         if ($asocs->isEmpty()) return false;
 
+        $nivelIds = $asocs->pluck('nivel_id')->filter()->unique()->values();
+        $nivelesById = $nivelIds->isNotEmpty()
+            ? Nivel::whereIn('id', $nivelIds)->pluck('nombre', 'id')
+            : collect();
+
         foreach ($asocs as $a) {
-            if ((int)$a->area_id === (int)$inscrito->area_id) {
-                // Si el evaluador no tiene nivel (NULL), con solo área basta
-                if (is_null($a->nivel_id) || (int)$a->nivel_id === (int)$inscrito->nivel_id) {
+            if (strcasecmp((string)$a->area_nombre, (string)$inscrito->area) === 0) {
+                if (is_null($a->nivel_id)) {
+                    return true; // sin nivel en la asociación
+                }
+                $nivelNombre = (string) ($nivelesById[$a->nivel_id] ?? '');
+                if ($nivelNombre !== '' && strcasecmp($nivelNombre, (string)$inscrito->nivel) === 0) {
                     return true;
                 }
             }
         }
         return false;
+    }
+
+    /** Resuelve Area.id por nombre (case-insensitive); si no existe retorna null. */
+    private function resolverAreaIdPorNombre(?string $nombre): ?int
+    {
+        if (!$nombre) return null;
+        $row = Area::whereRaw('LOWER(nombre) = ?', [mb_strtolower($nombre)])->first(['id']);
+        return $row?->id;
+    }
+
+    /** Resuelve Nivel.id por nombre (case-insensitive); si no existe retorna null. */
+    private function resolverNivelIdPorNombre(?string $nombre): ?int
+    {
+        if (!$nombre) return null;
+        $row = Nivel::whereRaw('LOWER(nombre) = ?', [mb_strtolower($nombre)])->first(['id']);
+        return $row?->id;
     }
 }

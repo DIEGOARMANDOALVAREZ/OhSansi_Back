@@ -11,12 +11,18 @@ class AuthResponsable
 {
     public function handle(Request $request, Closure $next)
     {
+        // 1) Bearer estándar
         $bearer = $request->bearerToken();
+
+        // 2) Fallback: ?token=xxxx (para exportaciones vía <a>)
+        if (!$bearer && $request->has('token')) {
+            $bearer = (string) $request->query('token');
+        }
+
         if (!$bearer) {
             return response()->json(['message' => 'Token faltante.'], 401);
         }
 
-        // compara contra hash guardado en BD
         $hash = hash('sha256', $bearer);
         $tokenRow = ResponsableToken::where('token', $hash)->first();
         if (!$tokenRow) {
@@ -32,7 +38,7 @@ class AuthResponsable
             return response()->json(['message' => 'Responsable no encontrado.'], 401);
         }
 
-        // inyecta el responsable para los controladores
+        // Inyecta el responsable para los controladores
         $request->merge(['responsable' => $responsable]);
 
         return $next($request);

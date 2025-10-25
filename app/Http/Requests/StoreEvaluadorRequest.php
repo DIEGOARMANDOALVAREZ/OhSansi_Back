@@ -30,8 +30,6 @@ class StoreEvaluadorRequest extends FormRequest
             'nivel_id'  => ($this->input('nivel_id') === '' || $this->input('nivel_id') === null)
                 ? null
                 : (int)$this->input('nivel_id'),
-
-            'activo'    => filter_var($this->input('activo'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? false,
         ]);
     }
 
@@ -49,8 +47,8 @@ class StoreEvaluadorRequest extends FormRequest
             'area_id'   => ['required', 'array', 'min:1'],
             'area_id.*' => ['required', 'integer', 'exists:areas,id'],
 
+            // Nivel único (opcional)
             'nivel_id'  => ['nullable', 'integer', 'exists:niveles,id'],
-            'activo'    => ['required', 'boolean'],
         ];
     }
 
@@ -78,7 +76,6 @@ class StoreEvaluadorRequest extends FormRequest
             'area_id.*.exists'   => 'Una o más áreas seleccionadas no existen.',
 
             'nivel_id.exists'    => 'El nivel indicado no existe.',
-            'activo.boolean'     => 'El campo estado es inválido.',
         ];
     }
 }
