@@ -3,17 +3,22 @@
 use Illuminate\Support\Facades\Route;
 use Illuminate\Http\Request;
 
+// Controladores base
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\ResponsableController;
 use App\Http\Controllers\EvaluadorController;
 use App\Http\Controllers\EvaluacionController;
 use App\Http\Controllers\InscritoController;
 use App\Http\Controllers\ClasificacionController;
-use App\Http\Controllers\LogNotasController; // ✅ CORREGIDO (fuera de la carpeta Responsable)
+use App\Http\Controllers\FinalEvaluacionController;
+use App\Http\Controllers\LogNotasController;
+use App\Http\Controllers\FinalistaController; // ✅ NUEVO (HU-9)
 
+// Middlewares
 use App\Http\Middleware\AuthResponsable;
 use App\Http\Middleware\AuthEvaluador;
 
+// Modelos simples (catálogos)
 use App\Models\Area;
 use App\Models\Nivel;
 
@@ -119,13 +124,10 @@ Route::middleware(AuthResponsable::class)->group(function () {
     // ===================================================
     Route::get('/responsable/clasificacion/preview', [ClasificacionController::class, 'preview'])
         ->name('responsable.clasificacion.preview');
-
     Route::post('/responsable/clasificacion/confirm', [ClasificacionController::class, 'confirm'])
         ->name('responsable.clasificacion.confirm');
-
     Route::get('/responsable/clasificacion/export', [ClasificacionController::class, 'exportCsv'])
         ->name('responsable.clasificacion.export');
-        
     Route::get('/responsable/clasificacion/list', [ClasificacionController::class, 'list'])
         ->name('responsable.clasificacion.list');
 
@@ -138,6 +140,35 @@ Route::middleware(AuthResponsable::class)->group(function () {
         ->name('responsable.logNotas.exportCsv');
     Route::get('/responsable/log-notas/export-xlsx', [LogNotasController::class, 'exportXlsx'])
         ->name('responsable.logNotas.exportXlsx');
+
+    // ===================================================
+    // 🧩 HU-9: PREPARAR ENTORNO CON CLASIFICADOS (FASE FINAL)
+    // ===================================================
+    Route::prefix('responsable/fase-final')->group(function () {
+        // Promover clasificados a la fase final por cierre confirmado
+        Route::post('/promover-por-cierre/{cierre}', [FinalistaController::class, 'promoverPorCierre'])
+            ->name('responsable.faseFinal.promoverPorCierre');
+
+        // Promover clasificados por filtro (área/nivel)
+        Route::post('/promover-por-filtro', [FinalistaController::class, 'promoverPorFiltro'])
+            ->name('responsable.faseFinal.promoverPorFiltro');
+
+        // Listar finalistas ya promovidos
+        Route::get('/listado', [FinalistaController::class, 'index'])
+            ->name('responsable.faseFinal.listado');
+
+        // Listar snapshots/auditorías de traspasos
+        Route::get('/snapshots', [FinalistaController::class, 'snapshots'])
+            ->name('responsable.faseFinal.snapshots');
+    });
+
+        // == HU-10: ranking preliminar + reapertura ==
+    Route::get('/responsable/final/ranking', [FinalEvaluacionController::class, 'ranking'])
+        ->name('responsable.final.ranking');
+
+    Route::post('/responsable/final/{finalista}/reabrir', [FinalEvaluacionController::class, 'reabrir'])
+        ->name('responsable.final.reabrir');
+
 });
 
 // =======================================================
@@ -154,6 +185,16 @@ Route::middleware(AuthEvaluador::class)->group(function () {
         ->name('evaluador.evaluaciones.guardar');
     Route::post('/evaluaciones/{inscrito}/finalizar', [EvaluacionController::class, 'finalizar'])
         ->name('evaluador.evaluaciones.finalizar');
+        // == HU-10: fase final (evaluador) ==
+    Route::get('/evaluador/final/asignadas', [FinalEvaluacionController::class, 'asignadas'])
+        ->name('evaluador.final.asignadas');
+
+    Route::post('/evaluador/final/{finalista}/guardar', [FinalEvaluacionController::class, 'guardar'])
+        ->name('evaluador.final.guardar');
+
+    Route::post('/evaluador/final/{finalista}/finalizar', [FinalEvaluacionController::class, 'finalizar'])
+        ->name('evaluador.final.finalizar');
+
 });
 
 // =======================================================
